@@ -2,44 +2,56 @@ package com.cugb.cli;
 
 /**
  * CLI UI utility: colors, icons, separators, and formatted output.
- * Uses ANSI 16-color (supports Windows Terminal / macOS / Linux).
- * Legacy cmd.exe requires Win10+ with VT enabled.
+ * Uses ANSI 16-color codes (supports Windows Terminal / macOS / Linux).
+ *
+ * On Windows, tries to enable Virtual Terminal processing via JNA.
+ * Falls back to plain ASCII when ANSI is not available.
  */
 public final class ConsoleUI {
 
-    // ==================== ANSI 颜色 ====================
+    // ==================== ANSI availability ====================
 
-    public static final String RESET   = "\033[0m";
-    public static final String BOLD    = "\033[1m";
-    public static final String DIM     = "\033[2m";
+    /** Whether ANSI escape codes are supported in this terminal. */
+    public static final boolean ANSI;
 
-    public static final String RED     = "\033[31m";
-    public static final String GREEN   = "\033[32m";
-    public static final String YELLOW  = "\033[33m";
-    public static final String BLUE    = "\033[34m";
-    public static final String MAGENTA = "\033[35m";
-    public static final String CYAN    = "\033[36m";
-    public static final String GRAY    = "\033[90m";
+    static {
+        TerminalSupport.enableAnsi();
+        ANSI = TerminalSupport.isAnsiSupported();
+    }
 
-    // ==================== Icons ====================
+    // ==================== ANSI 颜色（仅在 ANSI 模式下有效） ====================
 
-    public static final String ICON_USER    = "●";
-    public static final String ICON_AGENT   = "◉";
-    public static final String ICON_TOOL    = "⚙";
-    public static final String ICON_SUCCESS = "✓";
-    public static final String ICON_ERROR   = "✗";
-    public static final String ICON_WARN    = "⚠";
-    public static final String ICON_INFO    = "ℹ";
-    public static final String ICON_CLEAR   = "♻";
+    private static String esc(String code) {
+        return ANSI ? ("\033[" + code) : "";
+    }
+
+    public static final String RESET   = esc("0m");
+    public static final String BOLD    = esc("1m");
+    public static final String DIM     = esc("2m");
+
+    public static final String RED     = esc("31m");
+    public static final String GREEN   = esc("32m");
+    public static final String YELLOW  = esc("33m");
+    public static final String BLUE    = esc("34m");
+    public static final String MAGENTA = esc("35m");
+    public static final String CYAN    = esc("36m");
+    public static final String GRAY    = esc("90m");
+
+    // ==================== Icons（ANSI / ASCII 双模式） ====================
+
+    public static final String ICON_USER    = ANSI ? "●" : "> ";
+    public static final String ICON_AGENT   = ANSI ? "◉" : "* ";
+    public static final String ICON_TOOL    = ANSI ? "⚙" : "~ ";
+    public static final String ICON_SUCCESS = ANSI ? "✓" : "[OK]";
+    public static final String ICON_ERROR   = ANSI ? "✗" : "[ERR]";
+    public static final String ICON_WARN    = ANSI ? "⚠" : "[WARN]";
+    public static final String ICON_INFO    = ANSI ? "ℹ" : "[i]";
+    public static final String ICON_CLEAR   = ANSI ? "♻" : "[CLEAR]";
 
     // ==================== Separators ====================
 
     /** Single-line separator (default 60 chars) */
     private static final int SEP_LEN = 60;
-
-    private static String repeat(String ch, int n) {
-        return ch.repeat(n);
-    }
 
     /** 单线分隔符 */
     public static String sep() {
@@ -77,7 +89,11 @@ public final class ConsoleUI {
 
     /** Red error */
     public static void error(String msg) {
-        System.err.println(RED + "  " + ICON_ERROR + "  " + msg + RESET);
+        if (ANSI) {
+            System.err.println(RED + "  " + ICON_ERROR + "  " + msg + RESET);
+        } else {
+            System.err.println("  " + ICON_ERROR + "  " + msg);
+        }
     }
 
     /** Yellow warning */
@@ -109,32 +125,47 @@ public final class ConsoleUI {
 
     /**
      * Bordered panel with optional title.
+     * Uses Unicode box-drawing chars on ANSI terminals, ASCII fallback otherwise.
      */
     public static void bordered(String title, String[] body) {
-        int width = SEP_LEN - 2;
+        int innerWidth = SEP_LEN - 2; // width inside the border
 
-        // 顶边
-        if (title != null && !title.isEmpty()) {
-            String top = "┌─ " + BOLD + title + RESET + " ─";
-            int used = title.length() + 4;
-            String fill = repeat("─", Math.max(0, width - used));
-            System.out.println(top + fill + "┐");
+        // ---- border characters ----
+        String tl, tr, bl, br, h, v;
+
+        if (ANSI) {
+            tl = "┌"; tr = "┐"; bl = "└"; br = "┘"; h = "─"; v = "│";
         } else {
-            System.out.println("┌" + repeat("─", width) + "┐");
+            tl = "+"; tr = "+"; bl = "+"; br = "+"; h = "-"; v = "|";
         }
 
-        // 内容行
+        // ---- top border ----
+        if (title != null && !title.isEmpty()) {
+            String rawTitle = stripAnsi(title);
+            String top = tl + h + " " + title + " " + RESET;
+            int used = rawTitle.length() + 4; // "─ title ─"
+            String fill = repeat(h, Math.max(0, innerWidth - used));
+            System.out.println(top + fill + tr);
+        } else {
+            System.out.println(tl + repeat(h, innerWidth) + tr);
+        }
+
+        // ---- body rows ----
         for (String line : body) {
             if (line == null || line.isEmpty()) {
-                System.out.println("│" + repeat(" ", width) + "│");
+                System.out.println(v + repeat(" ", innerWidth) + v);
             } else {
-                System.out.println("│  " + line + repeat(" ", Math.max(0, width - line.length() - 2)) + "│");
+                int visibleLen = stripAnsi(line).length();
+                int pad = Math.max(0, innerWidth - visibleLen - 2);
+                System.out.println(v + "  " + line + repeat(" ", pad) + v);
             }
         }
 
-        // 底边
-        System.out.println("└" + repeat("─", width) + "┘");
+        // ---- bottom border ----
+        System.out.println(bl + repeat(h, innerWidth) + br);
     }
+
+    // ==================== Progress bar ====================
 
     /**
      * Token usage progress bar.
@@ -146,7 +177,28 @@ public final class ConsoleUI {
         filled = Math.max(filled, 0);
 
         String color = current > max ? RED : (pct > 0.8 ? YELLOW : GREEN);
-        return color + "█".repeat(filled) + GRAY + "░".repeat(barLen - filled) + RESET;
+        return color + repeat("█", filled) + GRAY + repeat("░", barLen - filled) + RESET;
+    }
+
+    // ==================== Internal helpers ====================
+
+    private static String repeat(String ch, int n) {
+        if (n <= 0) return "";
+        // Use StringBuilder for efficiency (but ch.repeat works on Java 11+)
+        StringBuilder sb = new StringBuilder(ch.length() * n);
+        for (int i = 0; i < n; i++) {
+            sb.append(ch);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Strip ANSI escape codes to get visible character count.
+     */
+    private static String stripAnsi(String s) {
+        if (s == null) return "";
+        // Remove CSI sequences: ESC [ ... m  and  ESC [ ... ; ... m
+        return s.replaceAll("\033\\[[;\\d]*m", "");
     }
 
     private ConsoleUI() { /* utility class */ }

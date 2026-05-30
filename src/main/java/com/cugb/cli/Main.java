@@ -8,6 +8,7 @@ import com.cugb.config.AppConfig;
 import com.cugb.llm.DsClient;
 import com.cugb.llm.PromptTemplate;
 
+import java.nio.charset.Charset;
 import java.util.List;
 import java.util.Scanner;
 
@@ -31,7 +32,11 @@ public class Main {
 
         Agent reactAgent = new Agent(sharedContext);
         PlanExecutionAgent peAgent = new PlanExecutionAgent(sharedContext);
-        Scanner scanner = new Scanner(System.in);
+        // 使用控制台原生编码读取输入，避免 Windows GBK→UTF-8 乱码
+        Charset consoleCharset = System.console() != null
+                ? System.console().charset()
+                : Charset.defaultCharset();
+        Scanner scanner = new Scanner(System.in, consoleCharset);
 
         Mode currentMode = Mode.REACT;
         info("Current mode: ReAct");
@@ -86,20 +91,15 @@ public class Main {
             // 执行请求
             try {
                 String response;
-                String modeLabel;
                 if (currentMode == Mode.REACT) {
                     response = reactAgent.run(input);
-                    modeLabel = BLUE + "ReAct" + RESET;
                 } else {
                     response = peAgent.run(input);
-                    modeLabel = MAGENTA + "Plan" + RESET;
                 }
 
-                // 用面板包裹响应
+                // 直接输出响应（不包裹面板）
                 newline();
-                String header = ICON_AGENT + "  " + modeLabel;
-                String[] body = wrapLines(response, 54);
-                bordered(header, body);
+                System.out.println(response);
             } catch (Exception e) {
                 error(e.getMessage());
             }
@@ -154,30 +154,9 @@ public class Main {
 
     // ==================== 辅助方法 ====================
 
-    /** 将长文本按最大宽度折行 */
-    private static String[] wrapLines(String text, int maxWidth) {
-        if (text == null || text.isEmpty()) return new String[]{""};
-        String[] paragraphs = text.split("\n");
-        java.util.List<String> lines = new java.util.ArrayList<>();
-        for (String para : paragraphs) {
-            if (para.isEmpty()) {
-                lines.add("");
-                continue;
-            }
-            // 简单按字符截断（英文环境，中文可改用更智能的策略）
-            int pos = 0;
-            while (pos < para.length()) {
-                int end = Math.min(pos + maxWidth, para.length());
-                lines.add(para.substring(pos, end));
-                pos = end;
-            }
-        }
-        return lines.toArray(new String[0]);
-    }
-
     private static void printHelp() {
         dim("  /react           Switch to ReAct mode");
-        dim("  /plan-and-exec   Switch to Plan-and-Execute mode");
+        dim("  /plan-and-execute   Switch to Plan-and-Execute mode");
         dim("  /context         Show context information");
         dim("  /clear           Clear conversation history");
         dim("  exit / quit      Exit the program");
