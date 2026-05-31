@@ -4,11 +4,13 @@ import com.cugb.llm.DsClient;
 import com.cugb.memory.ConversationHistoryCompactor;
 import com.cugb.memory.ConversationMemory;
 import com.cugb.memory.MemoryEntry;
+import com.cugb.memory.TokenBudget;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 统一的 Agent 上下文管理实现
@@ -33,8 +35,14 @@ public class UnifiedAgentContext implements IAgentContext {
     private final ConversationHistoryCompactor compactor;
     /** 基础 system prompt，永久不变（如 AGENT_SYSTEM） */
     private final String basePrompt;
+    /** basePrompt 的 token 数（构造时计算，运行时不变） */
+    private final int basePromptTokens;
     /** 当前模式指令，null 表示无特殊指令，使用 basePrompt */
     private String instruction;
+    /** instruction 的 token 数，无指令时为 0 */
+    private int instructionTokens = 0;
+    /** 当前工具列表的 token 数（由外部 Agent 在调用前设置） */
+    private int toolTokens = 0;
     private boolean autoCompactEnabled = true;
     private static final double COMPACT_TRIGGER_RATIO = 0.8;
     private static final ObjectMapper objectMapper = new ObjectMapper();
@@ -48,9 +56,13 @@ public class UnifiedAgentContext implements IAgentContext {
      */
     public UnifiedAgentContext(DsClient dsClient, String basePrompt, int maxToken) {
         this.basePrompt = basePrompt;
+        this.basePromptTokens = TokenBudget.countTokens(basePrompt);
         this.instruction = null;
+        this.instructionTokens = 0;
         this.conversationMemory = new ConversationMemory(maxToken);
-        this.compactor = new ConversationHistoryCompactor(dsClient, basePrompt);
+        // compactor 使用独立的长超时 DsClient，避免压缩时因输入巨大而超时
+        this.compactor = new ConversationHistoryCompactor(
+                new DsClient(60, 300, TimeUnit.SECONDS));
     }
 
     // ==================== 消息写入 ====================
@@ -140,11 +152,13 @@ public class UnifiedAgentContext implements IAgentContext {
     @Override
     public void setInstruction(String instruction) {
         this.instruction = instruction;
+        this.instructionTokens = instruction != null ? TokenBudget.countTokens(instruction) : 0;
     }
 
     @Override
     public void clearInstruction() {
         this.instruction = null;
+        this.instructionTokens = 0;
     }
 
     // ==================== 清理 ====================
@@ -164,7 +178,13 @@ public class UnifiedAgentContext implements IAgentContext {
     @Override
     public boolean shouldCompact() {
         if (!autoCompactEnabled) return false;
-        return conversationMemory.getTokenBudget().shouldCompact(COMPACT_TRIGGER_RATIO);
+        // 纳入 basePrompt + instruction + tools 与 messages/summaries 的综合开销
+        int effective = conversationMemory.getTokenBudget().getCurrentToken()
+                      + basePromptTokens
+                      + instructionTokens
+                      + toolTokens;
+        int max = conversationMemory.getTokenBudget().getMaxToken();
+        return effective > (int) (max * COMPACT_TRIGGER_RATIO);
     }
 
     @Override
@@ -172,13 +192,31 @@ public class UnifiedAgentContext implements IAgentContext {
         List<MemoryEntry> msgList = new ArrayList<>(conversationMemory.getMessages().values());
         if (msgList.isEmpty()) return;
 
-        // 只压缩对话消息，摘要保持不变
-        List<MemoryEntry> compacted = compactor.compact(msgList);
+        List<MemoryEntry> oldSummaries = new ArrayList<>(conversationMemory.getSummaries());
 
-        // 清除旧消息（正确修正 token）
+        // 1. 备份全部数据（用于失败回滚）
+        List<MemoryEntry> backup = new ArrayList<>();
+        backup.addAll(oldSummaries);
+        backup.addAll(msgList);
+
+        // 2. 清空 messages 和 summaries（token 预算同步归零）
         conversationMemory.clearMessages();
+        conversationMemory.clearSummaries();
 
-        // 重新添加压缩结果（addEntry 自动路由 SUMMARY → summaries）
+        // 3. 压缩（将已有摘要注入，使 LLM 产出合并后的统一摘要）
+        List<MemoryEntry> compacted;
+        try {
+            compacted = compactor.compact(msgList, oldSummaries);
+        } catch (Exception e) {
+            // 4. 失败 → 完整回滚
+            for (MemoryEntry entry : backup) {
+                conversationMemory.addEntry(entry);
+            }
+            System.err.println("[UnifiedAgentContext] 对话压缩失败，上下文已恢复: " + e.getMessage());
+            return;
+        }
+
+        // 5. 成功 → 写入压缩结果（SUMMARY 自动路由到 summaries，CONVERSATION 到 messages）
         for (MemoryEntry entry : compacted) {
             conversationMemory.addEntry(entry);
         }
@@ -189,7 +227,12 @@ public class UnifiedAgentContext implements IAgentContext {
         return conversationMemory.size();
     }
 
-    // ==================== 辅助方法 ====================
+    @Override
+    public int getSummaryCount() {
+        return conversationMemory.getSummaries().size();
+    }
+
+    // ==================== 各组件 token 明细 ====================
 
     @Override
     public int getCurrentTokenCount() {
@@ -200,6 +243,35 @@ public class UnifiedAgentContext implements IAgentContext {
     public int getMaxTokenLimit() {
         return conversationMemory.getTokenBudget().getMaxToken();
     }
+
+    @Override
+    public int getBasePromptTokens() {
+        return basePromptTokens;
+    }
+
+    @Override
+    public int getInstructionTokens() {
+        return instructionTokens;
+    }
+
+    @Override
+    public int getMessageTokens() {
+        return conversationMemory.getTokenBudget().getCurrentToken();
+    }
+
+    // ==================== 工具 token 管理 ====================
+
+    @Override
+    public void setToolTokens(int toolTokens) {
+        this.toolTokens = toolTokens;
+    }
+
+    @Override
+    public int getToolTokens() {
+        return toolTokens;
+    }
+
+    // ==================== 辅助方法 ====================
 
     public void setAutoCompactEnabled(boolean enabled) {
         this.autoCompactEnabled = enabled;

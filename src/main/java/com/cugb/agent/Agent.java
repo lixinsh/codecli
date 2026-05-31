@@ -3,6 +3,7 @@ package com.cugb.agent;
 import com.cugb.config.AppConfig;
 import com.cugb.llm.DsClient;
 import com.cugb.llm.PromptTemplate;
+import com.cugb.memory.TokenBudget;
 import com.cugb.tool.Tool;
 import com.cugb.tool.ToolRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -56,6 +57,7 @@ public class Agent {
 
         // 2. 获取所有可用工具
         List<Tool> tools = new ArrayList<>(toolRegistry.getAllTools().values());
+        context.setToolTokens(TokenBudget.countToolTokens(tools));
 
         int maxIterations = 10;
         for (int i = 0; i < maxIterations; i++) {

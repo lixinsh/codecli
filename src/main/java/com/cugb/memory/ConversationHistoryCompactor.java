@@ -22,55 +22,71 @@ public class ConversationHistoryCompactor {
 
     private static final int RECENT_ROUNDS_TO_KEEP = 5;  // 保留最近5轮
     private static final int MAP_GROUP_SIZE = 10;         // Map阶段每组10轮
-    
+    /** 摘要生成的 system 提示词（独立于 Agent 角色定义） */
+    private static final String SUMMARY_SYSTEM_PROMPT = "你是一个专业的对话摘要与信息整合助手，专注于将对话内容压缩为简洁、准确的摘要。";
+
     private final DsClient dsClient;
-    private final String systemPrompt;
 
     /**
      * 创建压缩器实例
      *
      * @param dsClient     LLM客户端
-     * @param systemPrompt 系统提示词（Agent角色定义）
      */
-    public ConversationHistoryCompactor(DsClient dsClient, String systemPrompt) {
+    public ConversationHistoryCompactor(DsClient dsClient) {
         this.dsClient = dsClient;
-        this.systemPrompt = systemPrompt;
     }
 
     /**
-     * 压缩对话历史
+     * 压缩对话历史（合并已有摘要，产出统一摘要）
      *
-     * @param entries 当前所有对话记忆条目（按时间顺序）
-     * @return 压缩后的新记忆条目列表（包含摘要和最近对话）
+     * @param messages          当前对话消息（按时间顺序）
+     * @param existingSummaries 已有的历史摘要（将被合并进新摘要，避免信息冗余）
+     * @return 压缩后的新记忆条目列表（包含 1 份统一摘要 + 最近对话）
      */
-    public List<MemoryEntry> compact(List<MemoryEntry> entries) {
-        if (entries == null || entries.isEmpty()) {
+    public List<MemoryEntry> compact(List<MemoryEntry> messages,
+                                      List<MemoryEntry> existingSummaries) {
+        if (messages == null || messages.isEmpty()) {
             return new ArrayList<>();
         }
 
         // 1. 分离最近对话和旧对话
-        int totalEntries = entries.size();
-        int recentCount = Math.min(RECENT_ROUNDS_TO_KEEP * 2, totalEntries); // 每轮=2条(user+assistant)
-        
-        List<MemoryEntry> recentEntries = entries.subList(
-                Math.max(0, totalEntries - recentCount), 
+        int totalEntries = messages.size();
+        int recentCount = Math.min(RECENT_ROUNDS_TO_KEEP * 2, totalEntries);
+
+        List<MemoryEntry> recentEntries = messages.subList(
+                Math.max(0, totalEntries - recentCount),
                 totalEntries
         );
-        
-        List<MemoryEntry> oldEntries = entries.subList(0, Math.max(0, totalEntries - recentCount));
 
-        // 2. 如果没有旧对话，直接返回最近对话
-        if (oldEntries.isEmpty()) {
+        List<MemoryEntry> oldEntries = messages.subList(0, Math.max(0, totalEntries - recentCount));
+
+        // 2. 构建完整输入：已有摘要 + 旧对话（合并去重）
+        List<MemoryEntry> combined = new ArrayList<>();
+        if (existingSummaries != null && !existingSummaries.isEmpty()) {
+            for (MemoryEntry s : existingSummaries) {
+                if (s.getContext() != null && !s.getContext().isEmpty()) {
+                    // 已有摘要包装为 system 消息，帮助 LLM 理解先前上下文
+                    combined.add(new MemoryEntry(
+                        "[先前对话概要]\n" + s.getContext(),
+                        "system", null, MemoryEntry.MemoryType.CONVERSATION
+                    ));
+                }
+            }
+        }
+        combined.addAll(oldEntries);
+
+        // 3. 如果没有需要压缩的内容（没有旧对话也没有已有摘要），直接返回最近对话
+        if (combined.isEmpty()) {
             return new ArrayList<>(recentEntries);
         }
 
-        // 3. 生成旧对话摘要
-        String summary = generateSummary(oldEntries);
+        // 4. 生成统一摘要（含先前摘要上下文）
+        String summary = generateSummary(combined);
 
-        // 4. 创建摘要记忆条目
+        // 5. 创建摘要记忆条目（只产出一份，替代原有的全部旧摘要）
         MemoryEntry summaryEntry = createSummaryEntry(summary);
 
-        // 5. 合并：摘要 + 最近对话
+        // 6. 合并：1 份统一摘要 + 最近对话
         List<MemoryEntry> result = new ArrayList<>();
         result.add(summaryEntry);
         result.addAll(recentEntries);
@@ -151,7 +167,7 @@ public class ConversationHistoryCompactor {
      */
     private String callLLMForSummary(String prompt) {
         List<DsClient.Message> messages = new ArrayList<>();
-        messages.add(new DsClient.Message("system", systemPrompt));
+        messages.add(new DsClient.Message("system", SUMMARY_SYSTEM_PROMPT));
         messages.add(new DsClient.Message("user", prompt));
         
         try {

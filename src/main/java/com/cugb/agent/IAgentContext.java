@@ -79,9 +79,9 @@ public interface IAgentContext {
     int getMessageCount();
 
     /**
-     * 获取当前已使用的 token 数量
+     * 获取当前已使用的 token 数量（仅 messages + summaries 的预算追踪值）
      *
-     * @return 当前 token 数
+     * @return 当前预算追踪 token 数
      */
     int getCurrentTokenCount();
 
@@ -91,6 +91,28 @@ public interface IAgentContext {
      * @return 最大 token 数
      */
     int getMaxTokenLimit();
+
+    // ==================== 各组件 token 明细（供 /context 显示） ====================
+
+    /** 获取 basePrompt 的 token 数（构造时计算，运行时不变） */
+    int getBasePromptTokens();
+
+    /** 获取当前 instruction（PE 模式指令）的 token 数，无指令时为 0 */
+    int getInstructionTokens();
+
+    /** 获取 messages + summaries 的预算追踪 token 数 */
+    int getMessageTokens();
+
+    // ==================== 工具 token 管理 ====================
+
+    /** 设置当前生效的工具列表的 token 数 */
+    void setToolTokens(int toolTokens);
+
+    /** 获取上次设置的工具列表 token 数 */
+    int getToolTokens();
+
+    /** 获取摘要条目数量 */
+    int getSummaryCount();
 
     /**
      * 清除所有 SUMMARY 类型的条目（压缩产生的摘要）

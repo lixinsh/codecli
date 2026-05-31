@@ -45,10 +45,22 @@ public class DsClient {
         }
     }
 
-    public DsClient(){
+    /** 默认构造函数：连接超时 60s，读取超时 120s */
+    public DsClient() {
+        this(60, 120, TimeUnit.SECONDS);
+    }
+
+    /**
+     * 可配置超时的构造函数（供压缩器等需要更长超时的场景使用）
+     *
+     * @param connectTimeout 连接超时值
+     * @param readTimeout    读取超时值
+     * @param unit           时间单位
+     */
+    public DsClient(long connectTimeout, long readTimeout, TimeUnit unit) {
         this.httpClient = new OkHttpClient.Builder()
-                .connectTimeout(60, TimeUnit.SECONDS)
-                .readTimeout(120,TimeUnit.SECONDS)
+                .connectTimeout(connectTimeout, unit)
+                .readTimeout(readTimeout, unit)
                 .build();
     }
 

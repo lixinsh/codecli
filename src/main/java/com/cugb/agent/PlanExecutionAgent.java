@@ -1,8 +1,10 @@
 package com.cugb.agent;
 
 import com.cugb.config.AppConfig;
+import com.cugb.config.AppConfig;
 import com.cugb.llm.DsClient;
 import com.cugb.llm.PromptTemplate;
+import com.cugb.memory.TokenBudget;
 import com.cugb.plan.ExecutionPlan;
 import com.cugb.plan.Task;
 import com.cugb.plan.Planner;
@@ -190,6 +192,7 @@ public class PlanExecutionAgent {
             agentContext.addMessage("user", taskPrompt);
 
             List<Tool> tools = new ArrayList<>(toolRegistry.getAllTools().values());
+            agentContext.setToolTokens(TokenBudget.countToolTokens(tools));
 
             int maxRounds = 3;
             for (int round = 0; round < maxRounds; round++) {

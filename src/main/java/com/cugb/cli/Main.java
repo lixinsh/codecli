@@ -67,7 +67,7 @@ public class Main {
                 continue;
             }
 
-            if (input.equalsIgnoreCase("/plan-and-execute")) {
+            if (input.equalsIgnoreCase("/plan")) {
                 currentMode = Mode.PLAN_EXECUTE;
                 line();
                 success("Switched to Plan-and-Execute mode");
@@ -111,13 +111,22 @@ public class Main {
     // ==================== 上下文信息 ====================
 
     private static void printContextInfo(IAgentContext context) {
-        int current = context.getCurrentTokenCount();
         int max = context.getMaxTokenLimit();
-        int msgCount = context.getMessageCount();
-        double pct = max > 0 ? (double) current / max * 100.0 : 0;
 
-        // 角色统计
+        // ---- 各组件 token 明细 ----
+        int basePromptTokens  = context.getBasePromptTokens();
+        int instructionTokens = context.getInstructionTokens();
+        int msgTokens = context.getMessageTokens();    // messages + summaries 预算追踪值
+        int toolTokens = context.getToolTokens();
+        int effectiveTotal = basePromptTokens + instructionTokens + msgTokens + toolTokens;
+
+        double pct = max > 0 ? (double) effectiveTotal / max * 100.0 : 0;
+        String bar = tokenBar(effectiveTotal, max, 42);
+
+        // ---- 角色统计 ----
         List<DsClient.Message> messages = context.getMessages();
+        int msgEntryCount = context.getMessageCount();
+        int summaryCount = context.getSummaryCount();
         int userCount = 0, assistantCount = 0, toolCount = 0, systemCount = 0;
         for (DsClient.Message msg : messages) {
             switch (msg.role()) {
@@ -128,23 +137,34 @@ public class Main {
             }
         }
 
-        String bar = tokenBar(current, max, 42);
-        String remaining = String.format("%,d", Math.max(0, max - current));
-        String usage = String.format("%,d / %,d tokens (%.1f%%)", current, max, pct);
-        String msgInfo = msgCount + " messages  ·  user:" + userCount
-                + "  assistant:" + assistantCount + "  tool:" + toolCount + "  system:" + systemCount;
-        String statusLine = current > max
+        // ---- 状态 ----
+        String remaining = String.format("%,d", Math.max(0, max - effectiveTotal));
+        String usage = String.format("%,d / %,d tokens (%.1f%%)", effectiveTotal, max, pct);
+        String statusLine = effectiveTotal > max
                 ? RED + "OVER BUDGET" + RESET + "  (" + remaining + " remaining)"
                 : GREEN + "OK" + RESET + "  (" + remaining + " remaining)";
 
+        String instructionLabel = instructionTokens > 0
+                ? "  instruction   " + fmt(instructionTokens) + " tokens  (active)"
+                : "  instruction   0 tokens  (none)";
+
         String[] body = {
                 "",
-                "Tokens     " + usage,
-                "           [" + bar + "]",
+                "  system prompt  " + fmt(basePromptTokens) + " tokens",
+                instructionLabel,
+                "  messages       " + fmt(msgTokens) + " tokens  ("
+                        + (msgEntryCount - summaryCount) + " msgs + " + summaryCount + " summaries)",
+                "  tools          " + fmt(toolTokens) + " tokens",
+                "  " + GRAY + "───────────────" + RESET,
+                "  total effect.  " + BOLD + fmt(effectiveTotal) + " / " + fmt(max)
+                        + " tokens  (" + String.format("%.1f", pct) + "%)" + RESET,
+                "  " + bar,
                 "",
-                "Messages   " + msgInfo,
+                "  entries        " + msgEntryCount + " total  ·  summaries:" + summaryCount,
+                "  roles          user:" + userCount + "  assistant:" + assistantCount
+                        + "  tool:" + toolCount + "  system:" + systemCount,
                 "",
-                "Status     " + statusLine,
+                "  status         " + statusLine,
         };
 
         newline();
@@ -152,11 +172,16 @@ public class Main {
         newline();
     }
 
+    /** 格式化整数带千位分隔 */
+    private static String fmt(int n) {
+        return String.format("%,d", n);
+    }
+
     // ==================== 辅助方法 ====================
 
     private static void printHelp() {
         dim("  /react           Switch to ReAct mode");
-        dim("  /plan-and-execute   Switch to Plan-and-Execute mode");
+        dim("  /plan            Switch to Plan-and-Execute mode");
         dim("  /context         Show context information");
         dim("  /clear           Clear conversation history");
         dim("  exit / quit      Exit the program");

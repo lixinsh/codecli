@@ -1,5 +1,11 @@
  package com.cugb.memory;
 
+import com.cugb.tool.Tool;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -145,5 +151,38 @@ public class TokenBudget {
             total += entry.getTokenCount();
         }
         return total;
+    }
+
+    /**
+     * 估算工具定义列表的 token 数
+     * <p>
+     * 构建与 DsClient.chat() 中完全一致的 tools JSON 结构，再计算其 token 数。
+     * 在工具数量多、参数描述长时，这部分开销不可忽略。
+     *
+     * @param tools 工具集合
+     * @return 工具定义 JSON 的估算 token 数
+     */
+    public static int countToolTokens(Collection<Tool> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return 0;
+        }
+        ObjectMapper mapper = new ObjectMapper();
+        ArrayNode toolsNode = mapper.createArrayNode();
+        for (Tool tool : tools) {
+            ObjectNode functionNode = mapper.createObjectNode();
+            functionNode.put("name", tool.name());
+            functionNode.put("description", tool.description());
+            functionNode.set("parameters", tool.parameters());
+            ObjectNode wrapper = mapper.createObjectNode();
+            wrapper.put("type", "function");
+            wrapper.set("function", functionNode);
+            toolsNode.add(wrapper);
+        }
+        try {
+            return countTokens(mapper.writeValueAsString(toolsNode));
+        } catch (Exception e) {
+            // 回退：每个工具按 150 tokens 粗估
+            return tools.size() * 150;
+        }
     }
 }
